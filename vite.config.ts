@@ -52,6 +52,9 @@ export default defineConfig(async () => {
       sites(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+        // The Codex preview sandbox cannot bind the Wrangler inspector port.
+        // The application itself remains available on the Vite dev port.
+        inspectorPort: false,
         config: localBindingConfig,
       }),
     ],

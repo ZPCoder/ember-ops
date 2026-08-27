@@ -1,0 +1,47 @@
+name: astra-protocol
+
+services:
+  room-server:
+    image: ghcr.io/zpcoder/astra-room-server:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: room-server
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    expose:
+      - "8787"
+    networks:
+      - app-internal
+
+  web:
+    image: ghcr.io/zpcoder/astra-web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      room-server:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    networks:
+      - app-internal
+
+networks:
+  app-internal:
+    driver: bridge

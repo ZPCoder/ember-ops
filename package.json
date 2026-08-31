@@ -1,0 +1,11 @@
+{
+  "name": "@ember/ops",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check:matrix": "node scripts/check-matrix.mjs compatibility/versions.json",
+    "decide:hosting": "node scripts/decide-hosting.mjs"
+  }
+}

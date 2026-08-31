@@ -1,0 +1,26 @@
+name: seven-repo-compatibility
+on:
+  workflow_dispatch:
+  pull_request:
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm test
+      - name: Checkout compatible sources
+        env:
+          GH_TOKEN: ${{ secrets.EMBER_REPOSITORY_READ_TOKEN }}
+        run: node scripts/checkout-compatible.mjs compatibility/versions.json
+      - name: Build and test all boundaries
+        run: node scripts/run-compatible.mjs compatibility/versions.json
+      - name: Upload compatibility evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-evidence
+          path: evidence/

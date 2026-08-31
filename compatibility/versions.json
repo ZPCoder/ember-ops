@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "environment": "integration",
+  "updatedAt": "2026-08-31T00:00:00.000Z",
+  "active": {
+    "protocol": "1.0.0",
+    "sdk": "1.0.0",
+    "config": "2026.08.31+sha256.pending",
+    "client": "1.0.0",
+    "backendAdmin": "1.0.0",
+    "data": "1.0.0"
+  },
+  "rollback": {
+    "protocol": "1.0.0",
+    "sdk": "1.0.0",
+    "config": "2026.08.31+sha256.pending",
+    "client": "1.0.0",
+    "backendAdmin": "1.0.0",
+    "data": "1.0.0"
+  },
+  "constraints": {
+    "supportedProtocolMajors": [1],
+    "serverRetainsMinorVersions": 2,
+    "minimumClientVersion": "1.0.0"
+  }
+}

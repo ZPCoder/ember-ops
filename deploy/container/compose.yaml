@@ -1,0 +1,22 @@
+services:
+  api:
+    image: ghcr.io/zpcoder/ember-backend-admin:${EMBER_BACKEND_VERSION:?set version}
+    environment:
+      DATABASE_URL: postgresql://ember:${POSTGRES_PASSWORD}@postgres/ember
+      REDIS_URL: redis://redis:6379
+      EMBER_PROTOCOL_VERSION: ${EMBER_PROTOCOL_VERSION:?set protocol}
+    depends_on: [postgres, redis]
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ember
+      POSTGRES_USER: ember
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set password}
+    volumes: [ember_pg:/var/lib/postgresql/data]
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [ember_redis:/data]
+volumes:
+  ember_pg:
+  ember_redis:

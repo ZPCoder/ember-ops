@@ -1,0 +1,13 @@
+service: ember-pvp
+objectives:
+  state_propagation_p95_ms: 800
+  reconnect_p95_ms: 3000
+  error_rate_max: 0.005
+  duplicate_settlements_max: 0
+  lost_accepted_commands_max: 0
+client:
+  first_interactive_20mbps_ms: 8000
+  initial_bundle_gzip_bytes: 15728640
+  integrated_gpu_target_fps: 60
+  integrated_gpu_min_fps: 30
+  peak_memory_bytes: 838860800

@@ -1,26 +1,107 @@
 name: seven-repo-compatibility
+
 on:
   workflow_dispatch:
+    inputs:
+      section:
+        description: Compatibility tuple to verify
+        required: true
+        default: active
+        type: choice
+        options: [active, rollback]
   pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: compatibility-${{ github.ref }}-${{ inputs.section || 'active' }}
+  cancel-in-progress: false
+
 jobs:
-  matrix:
+  automated-compatibility-no-editor:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
+    env:
+      GH_TOKEN: ${{ secrets.EMBER_REPOSITORY_READ_TOKEN }}
+      MATRIX_SECTION: ${{ inputs.section || 'active' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install authenticated checkout and SQLite tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gh sqlite3
+          gh --version
+          git --version
+          sqlite3 --version
+      - name: Require the private-repository token
+        run: test -n "${GH_TOKEN:-}" || { echo "EMBER_REPOSITORY_READ_TOKEN is required" >&2; exit 1; }
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
-      - name: Checkout compatible sources
-        env:
-          GH_TOKEN: ${{ secrets.EMBER_REPOSITORY_READ_TOKEN }}
-        run: node scripts/checkout-compatible.mjs compatibility/versions.json
-      - name: Build and test all boundaries
-        run: node scripts/run-compatible.mjs compatibility/versions.json
-      - name: Upload compatibility evidence
+      - run: npm run check:k6
+      - run: npm run check:matrix
+      - name: Checkout exact compatible release tags
+        run: >-
+          node scripts/checkout-compatible.mjs compatibility/versions.json
+          --section "$MATRIX_SECTION"
+          --workspace-base "$RUNNER_TEMP"
+          --evidence evidence/checkout.json
+      - name: Execute every automated repository gate
+        run: >-
+          node scripts/run-compatible.mjs compatibility/versions.json
+          --checkout-evidence evidence/checkout.json
+          --evidence evidence/gates.json
+      - name: Upload automated compatibility evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compatibility-evidence
+          name: compatibility-evidence-${{ github.run_id }}-${{ github.job }}
           path: evidence/
+          if-no-files-found: error
+
+  creator-editor-required:
+    runs-on: [self-hosted, cocos-creator-3.8.8]
+    env:
+      GH_TOKEN: ${{ secrets.EMBER_REPOSITORY_READ_TOKEN }}
+      MATRIX_SECTION: ${{ inputs.section || 'active' }}
+      COCOS_CREATOR_CLI: ${{ vars.COCOS_CREATOR_CLI }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify required self-hosted tooling and credentials
+        run: |
+          command -v gh
+          command -v git
+          test -n "${GH_TOKEN:-}" || { echo "EMBER_REPOSITORY_READ_TOKEN is required" >&2; exit 1; }
+          test -n "${COCOS_CREATOR_CLI:-}" || { echo "COCOS_CREATOR_CLI repository variable is required" >&2; exit 1; }
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npm run check:k6
+      - name: Checkout exact compatible release tags for the editor gate
+        run: >-
+          node scripts/checkout-compatible.mjs compatibility/versions.json
+          --section "$MATRIX_SECTION"
+          --workspace-base "$RUNNER_TEMP"
+          --evidence evidence/checkout-editor.json
+      - name: Build with licensed Cocos Creator 3.8.8
+        run: >-
+          node scripts/run-cocos-editor-gate.mjs
+          --checkout-evidence evidence/checkout-editor.json
+          --evidence evidence/cocos-editor.json
+      - name: Upload Cocos editor evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cocos-editor-evidence-${{ github.run_id }}-${{ github.job }}
+          path: evidence/
+          if-no-files-found: error

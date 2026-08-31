@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { runCocosEditorGate } from "../scripts/run-cocos-editor-gate.mjs";
+
+test("Cocos editor gate fails closed without a configured licensed executable", async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), "ember-editor-gate-test-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const workspaceBase = join(temporary, "workspaces");
+  await mkdir(workspaceBase, { recursive: true });
+  const workspaceRoot = await mkdtemp(join(workspaceBase, "ember-compat-active-"));
+  const clientPath = join(workspaceRoot, "ember-client");
+  await mkdir(clientPath);
+  const checkoutPath = join(temporary, "checkout.json");
+  const evidencePath = join(temporary, "editor.json");
+  const workspaceMarker = {
+    schemaVersion: 1,
+    id: "fixture-workspace",
+    section: "active",
+    matrixSha256: "b".repeat(64),
+    createdBy: "ember-ops/checkout-compatible",
+  };
+  await writeFile(join(workspaceRoot, ".ember-compat-workspace.json"), JSON.stringify(workspaceMarker));
+  await writeFile(checkoutPath, JSON.stringify({
+    status: "passed",
+    section: "active",
+    workspaceRoot,
+    workspaceMarker,
+    repositories: {
+      client: { repository: "ZPCoder/ember-client", tag: "v0.1.0", sha: "a".repeat(40), path: clientPath },
+    },
+  }));
+  await assert.rejects(runCocosEditorGate({
+    checkoutEvidencePath: checkoutPath,
+    evidencePath,
+    env: {},
+    commandRunner: async () => {
+      throw new Error("runner must not be called without COCOS_CREATOR_CLI");
+    },
+  }), /COCOS_CREATOR_CLI must be configured/);
+  await assert.rejects(access(workspaceRoot));
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  assert.equal(evidence.status, "failed");
+  assert.equal(evidence.releaseReady, false);
+  assert.equal(evidence.workspaceCleaned, true);
+});
+
+test("workflow runs real tag gates on main and separates the self-hosted editor job", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/compatibility.yml", import.meta.url), "utf8");
+  assert.match(workflow, /branches: \[main\]/);
+  assert.match(workflow, /tags: \["v\*"\]/);
+  assert.match(workflow, /automated-compatibility-no-editor:/);
+  assert.match(workflow, /creator-editor-required:/);
+  assert.match(workflow, /runs-on: \[self-hosted, cocos-creator-3\.8\.8\]/);
+  assert.match(workflow, /sudo apt-get install --yes gh sqlite3/);
+  assert.match(workflow, /EMBER_REPOSITORY_READ_TOKEN is required/);
+  assert.match(workflow, /run-compatible\.mjs/);
+  assert.match(workflow, /run-cocos-editor-gate\.mjs/);
+});

@@ -1,4 +1,7 @@
 node_modules/
 evidence/
+.compat-work/
 load/results.json
+load/credentials.local.json
+load/*.secrets.json
 .env*

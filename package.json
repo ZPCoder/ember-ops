@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.mjs",
+    "check:k6": "node --check load/pvp-contract.js && node --check load/k6-pvp.js",
     "check:matrix": "node scripts/check-matrix.mjs compatibility/versions.json",
     "decide:hosting": "node scripts/decide-hosting.mjs"
   }

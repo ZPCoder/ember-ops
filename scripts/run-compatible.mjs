@@ -12,5 +12,5 @@ const gates = [
   "cross-client-pvp-e2e",
 ];
 await mkdir("evidence", { recursive: true });
-await writeFile("evidence/gates.json", `${JSON.stringify({ matrix: matrix.active, required: gates }, null, 2)}\n`);
+await writeFile("evidence/gates.json", `${JSON.stringify({ packages: matrix.active, contracts: matrix.contracts, required: gates }, null, 2)}\n`);
 console.log(gates.join("\n"));

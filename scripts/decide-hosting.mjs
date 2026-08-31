@@ -2,14 +2,13 @@ import { readFile } from "node:fs/promises";
 
 export function decideHosting(results) {
   const probes = Array.isArray(results.probes) ? results.probes : [];
-  const allMainlandPass = probes.length > 0 && probes
-    .filter((probe) => probe.region === "CN")
-    .every((probe) =>
-      probe.statePropagationP95Ms <= 800
-      && probe.reconnectP95Ms <= 3_000
-      && probe.errorRate < 0.005
-      && probe.duplicateSettlements === 0
-      && probe.lostCommands === 0);
+  const mainlandProbes = probes.filter((probe) => probe.region === "CN");
+  const allMainlandPass = mainlandProbes.length > 0 && mainlandProbes.every((probe) =>
+    probe.statePropagationP95Ms <= 800
+    && probe.reconnectP95Ms <= 3_000
+    && probe.errorRate < 0.005
+    && probe.duplicateSettlements === 0
+    && probe.lostCommands === 0);
   return allMainlandPass ? "cloudflare" : "container-mainland";
 }
 

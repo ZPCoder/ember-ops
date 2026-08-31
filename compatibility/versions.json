@@ -3,24 +3,44 @@
   "environment": "integration",
   "updatedAt": "2026-08-31T00:00:00.000Z",
   "active": {
-    "protocol": "1.0.0",
-    "sdk": "1.0.0",
-    "config": "2026.08.31+sha256.pending",
-    "client": "1.0.0",
-    "backendAdmin": "1.0.0",
-    "data": "1.0.0"
+    "protocol": "0.1.0",
+    "sdk": "0.1.0",
+    "config": "0.1.0",
+    "client": "0.1.0",
+    "backendAdmin": "0.1.0",
+    "ops": "0.1.0",
+    "data": "0.1.0"
   },
   "rollback": {
-    "protocol": "1.0.0",
-    "sdk": "1.0.0",
-    "config": "2026.08.31+sha256.pending",
-    "client": "1.0.0",
-    "backendAdmin": "1.0.0",
-    "data": "1.0.0"
+    "protocol": "0.1.0",
+    "sdk": "0.1.0",
+    "config": "0.1.0",
+    "client": "0.1.0",
+    "backendAdmin": "0.1.0",
+    "ops": "0.1.0",
+    "data": "0.1.0"
+  },
+  "contracts": {
+    "active": {
+      "protocolVersion": "1.0.0",
+      "configManifest": {
+        "version": "1.0.0",
+        "minimumClientVersion": "0.1.0",
+        "sha256": "42a38bd57d713bb1bf564ac8bb8c8fe64ec3f7e624c23c1d30a887ad2fc05051"
+      }
+    },
+    "rollback": {
+      "protocolVersion": "1.0.0",
+      "configManifest": {
+        "version": "1.0.0",
+        "minimumClientVersion": "0.1.0",
+        "sha256": "42a38bd57d713bb1bf564ac8bb8c8fe64ec3f7e624c23c1d30a887ad2fc05051"
+      }
+    }
   },
   "constraints": {
     "supportedProtocolMajors": [1],
     "serverRetainsMinorVersions": 2,
-    "minimumClientVersion": "1.0.0"
+    "minimumClientVersion": "0.1.0"
   }
 }

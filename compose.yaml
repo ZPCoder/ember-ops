@@ -2,7 +2,6 @@ name: astra-protocol
 
 services:
   room-server:
-    image: ghcr.io/zpcoder/astra-room-server:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -20,7 +19,6 @@ services:
       - app-internal
 
   web:
-    image: ghcr.io/zpcoder/astra-web:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile

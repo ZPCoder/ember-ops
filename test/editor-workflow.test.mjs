@@ -27,9 +27,10 @@ test("Cocos editor gate fails closed without a configured licensed executable", 
     status: "passed",
     section: "active",
     workspaceRoot,
+    workspaceBase,
     workspaceMarker,
     repositories: {
-      client: { repository: "ZPCoder/ember-client", tag: "v0.1.0", sha: "a".repeat(40), path: clientPath },
+      client: { repository: "ZPCoder/ember-client", tag: "v0.1.0", sha: "a".repeat(40), expectedSha: "a".repeat(40), path: clientPath },
     },
   }));
   await assert.rejects(runCocosEditorGate({
@@ -43,7 +44,7 @@ test("Cocos editor gate fails closed without a configured licensed executable", 
   await assert.rejects(access(workspaceRoot));
   const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
   assert.equal(evidence.status, "failed");
-  assert.equal(evidence.releaseReady, false);
+  assert.equal(evidence.aggregateRequired, true);
   assert.equal(evidence.workspaceCleaned, true);
 });
 
@@ -53,9 +54,15 @@ test("workflow runs real tag gates on main and separates the self-hosted editor 
   assert.match(workflow, /tags: \["v\*"\]/);
   assert.match(workflow, /automated-compatibility-no-editor:/);
   assert.match(workflow, /creator-editor-required:/);
-  assert.match(workflow, /runs-on: \[self-hosted, cocos-creator-3\.8\.8\]/);
-  assert.match(workflow, /sudo apt-get install --yes gh sqlite3/);
-  assert.match(workflow, /EMBER_REPOSITORY_READ_TOKEN is required/);
+  assert.match(workflow, /runs-on: \[self-hosted, ephemeral, cocos-creator-3\.8\.8\]/);
+  assert.match(workflow, /release-preflight:/);
+  assert.match(workflow, /pvp-load-required:/);
+  assert.match(workflow, /release-required:/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.doesNotMatch(workflow, /^  pull_request:/m);
   assert.match(workflow, /run-compatible\.mjs/);
   assert.match(workflow, /run-cocos-editor-gate\.mjs/);
+  const prWorkflow = await readFile(new URL("../.github/workflows/ops-ci.yml", import.meta.url), "utf8");
+  assert.match(prWorkflow, /pull_request:/);
+  assert.doesNotMatch(prWorkflow, /EMBER_REPOSITORY_READ_TOKEN/);
 });

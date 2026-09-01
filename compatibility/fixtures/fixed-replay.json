@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": "1.0",
+  "clientVersion": "0.1.0",
+  "seed": 20260831,
+  "matchId": "parity-fixture",
+  "commands": [
+    { "type": "mulligan", "player": 0, "cardIndexes": [], "commandId": "p0-mulligan" },
+    { "type": "mulligan", "player": 1, "cardIndexes": [], "commandId": "p1-mulligan" }
+  ],
+  "expectedStateDigest": "74b42cf24358e6d0"
+}

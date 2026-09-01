@@ -11,6 +11,7 @@ function success(command, args, options, stdout = "", exitCode = 0) {
 }
 
 function fakeCheckoutRunner(commands, failRepository) {
+  const matrixPromise = readFile(new URL("../compatibility/versions.json", import.meta.url), "utf8").then(JSON.parse);
   return async (command, args, options) => {
     commands.push({ command, args: [...args], cwd: options.cwd });
     if (command === "gh" && args[0] === "auth") return success(command, args, options);
@@ -22,12 +23,21 @@ function fakeCheckoutRunner(commands, failRepository) {
       await writeFile(join(destination, "package.json"), JSON.stringify({ name: definition.packageName, version: "0.1.0" }));
       return success(command, args, options);
     }
+    if (command === "npm" && args[0] === "view") {
+      const matrix = await matrixPromise;
+      const definitionEntry = Object.entries(REPOSITORIES).find(([_key, definition]) => args[1].startsWith(`${definition.packageName}@`));
+      const [key] = definitionEntry;
+      const stdout = args[2] === "version" ? JSON.stringify("0.1.0") : JSON.stringify(matrix.expectedCommits.active[key]);
+      return success(command, args, options, `${stdout}\n`);
+    }
     if (command !== "git") throw new Error(`unexpected command ${command}`);
     const operation = args.find((value) => new Set(["fetch", "checkout", "rev-parse", "symbolic-ref", "describe", "status", "remote"]).has(value));
     const repository = options.cwd?.split("/").at(-1);
     if (operation === "fetch" && repository === failRepository) throw new Error(`simulated private fetch failure for ${repository}`);
-    const index = Object.values(REPOSITORIES).findIndex((definition) => definition.repository === repository) + 1;
-    const sha = createHash("sha1").update(`${repository}-${index}`).digest("hex");
+    const matrix = await matrixPromise;
+    const key = Object.entries(REPOSITORIES).find(([_key, definition]) => definition.repository === repository)?.[0];
+    const sha = key === "ops" ? createHash("sha1").update("local-ops").digest("hex") : matrix.expectedCommits.active[key];
+    if (operation === "rev-parse" && args.includes("--show-toplevel")) return success(command, args, options, `${options.cwd}\n`);
     if (operation === "rev-parse") return success(command, args, options, `${sha}\n`);
     if (operation === "symbolic-ref") return success(command, args, options, "", 1);
     if (operation === "describe") return success(command, args, options, "v0.1.0\n");
@@ -52,11 +62,11 @@ test("checks out every private repository at an authenticated exact detached tag
 
   assert.equal(result.status, "passed");
   assert.equal(Object.keys(result.repositories).length, 7);
-  assert.ok(Object.values(result.repositories).every((repository) => repository.detached && repository.clean));
+  assert.ok(Object.values(result.repositories).filter((repository) => repository.tag).every((repository) => repository.detached && repository.clean));
   const fetches = commands.filter(({ command, args }) => command === "git" && args.includes("fetch"));
   const clones = commands.filter(({ command, args }) => command === "git" && args.includes("clone"));
-  assert.equal(clones.length, 7);
-  assert.equal(fetches.length, 7);
+  assert.equal(clones.length, 6);
+  assert.equal(fetches.length, 6);
   for (const operation of [...clones, ...fetches]) {
     assert.deepEqual(operation.args.slice(0, 4), [
       "-c", "credential.helper=",
@@ -68,6 +78,7 @@ test("checks out every private repository at an authenticated exact detached tag
   }
   const persisted = JSON.parse(await readFile(evidencePath, "utf8"));
   assert.ok(Object.values(persisted.repositories).every((repository) => /^[a-f0-9]{40}$/.test(repository.sha)));
+  assert.equal(Object.keys(persisted.registryPackages).length, 3);
 });
 
 test("missing token fails closed before attempting a clone", async (t) => {

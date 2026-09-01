@@ -20,9 +20,27 @@
     "ops": "0.1.0",
     "data": "0.1.0"
   },
+  "expectedCommits": {
+    "active": {
+      "protocol": "7a3f149bca8a54a2c6258061ea3daf32dfbb11d6",
+      "sdk": "cdbc5cd8f632f3a0098a3a4ae69dd078339c9223",
+      "config": "1da24ed1d6d90d82e1dff4108954a5e2d6c4cb45",
+      "client": "4caeefd86de6b137a0f968ca66a50b68d700f318",
+      "backendAdmin": "aa0583867822308b46d2b8daee5607bd760062b5",
+      "data": "78d0f8f0505ff5920b340a99b767962b388deb64"
+    },
+    "rollback": {
+      "protocol": "7a3f149bca8a54a2c6258061ea3daf32dfbb11d6",
+      "sdk": "cdbc5cd8f632f3a0098a3a4ae69dd078339c9223",
+      "config": "1da24ed1d6d90d82e1dff4108954a5e2d6c4cb45",
+      "client": "4caeefd86de6b137a0f968ca66a50b68d700f318",
+      "backendAdmin": "aa0583867822308b46d2b8daee5607bd760062b5",
+      "data": "78d0f8f0505ff5920b340a99b767962b388deb64"
+    }
+  },
   "contracts": {
     "active": {
-      "protocolVersion": "1.0.0",
+      "protocolVersion": "1.0",
       "configManifest": {
         "version": "1.0.0",
         "minimumClientVersion": "0.1.0",
@@ -30,7 +48,7 @@
       }
     },
     "rollback": {
-      "protocolVersion": "1.0.0",
+      "protocolVersion": "1.0",
       "configManifest": {
         "version": "1.0.0",
         "minimumClientVersion": "0.1.0",

@@ -15,6 +15,13 @@ export const REPOSITORIES = Object.freeze({
   data: { repository: "ember-data", packageName: "@zpcoder/ember-data" },
 });
 
+export const EXTERNAL_REPOSITORY_KEYS = Object.freeze(
+  Object.keys(REPOSITORIES).filter((key) => key !== "ops"),
+);
+
+const REGISTRY_PACKAGE_KEYS = Object.freeze(["protocol", "sdk", "config"]);
+const DEFAULT_OPS_SOURCE = fileURLToPath(new URL("../", import.meta.url));
+
 const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
@@ -26,6 +33,11 @@ function assertReleaseTuple(matrix, section) {
     const version = matrix[section]?.[key];
     if (typeof version !== "string" || !RELEASE_VERSION.test(version)) {
       throw new Error(`${section}.${key} must be an exact release version`);
+    }
+  }
+  for (const key of EXTERNAL_REPOSITORY_KEYS) {
+    if (!/^[a-f0-9]{40}$/.test(matrix.expectedCommits?.[section]?.[key] ?? "")) {
+      throw new Error(`${section}.${key} must have an immutable expected commit SHA`);
     }
   }
 }
@@ -50,6 +62,7 @@ export async function checkoutCompatibility(options) {
     owner = "ZPCoder",
     workspaceBase = process.env.RUNNER_TEMP ?? ".compat-work",
     evidencePath = "evidence/checkout.json",
+    opsSourcePath = DEFAULT_OPS_SOURCE,
     env = process.env,
     commandRunner = runProcess,
   } = options;
@@ -71,6 +84,7 @@ export async function checkoutCompatibility(options) {
     matrixSha256,
     packages: matrix[section],
     contracts: matrix.contracts[section],
+    expectedCommits: matrix.expectedCommits[section],
     startedAt: new Date().toISOString(),
     workspaceRoot: null,
     repositories: {},
@@ -84,22 +98,9 @@ export async function checkoutCompatibility(options) {
   }
 
   const base = resolve(workspaceBase);
-  await mkdir(base, { recursive: true });
-  const workspaceRoot = await mkdtemp(join(base, `ember-compat-${section}-`));
-  const workspaceMarker = {
-    schemaVersion: 1,
-    id: randomUUID(),
-    section,
-    matrixSha256,
-    createdBy: "ember-ops/checkout-compatible",
-  };
-  await writeFile(
-    join(workspaceRoot, ".ember-compat-workspace.json"),
-    `${JSON.stringify(workspaceMarker)}\n`,
-    { mode: 0o600 },
-  );
-  evidence.workspaceRoot = workspaceRoot;
-  evidence.workspaceMarker = workspaceMarker;
+  evidence.workspaceBase = base;
+  let workspaceRoot = null;
+  let registryNpmrc = null;
 
   const run = async (command, args, commandOptions = {}) => {
     const result = await commandRunner(command, args, {
@@ -110,10 +111,29 @@ export async function checkoutCompatibility(options) {
   };
 
   try {
+    await mkdir(base, { recursive: true });
+    workspaceRoot = await mkdtemp(join(base, `ember-compat-${section}-`));
+    const workspaceMarker = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      section,
+      matrixSha256,
+      createdBy: "ember-ops/checkout-compatible",
+    };
+    await writeFile(
+      join(workspaceRoot, ".ember-compat-workspace.json"),
+      `${JSON.stringify(workspaceMarker)}\n`,
+      { mode: 0o600 },
+    );
+    evidence.workspaceRoot = workspaceRoot;
+    evidence.workspaceMarker = workspaceMarker;
+
     await run("gh", ["auth", "status", "--hostname", "github.com"]);
-    for (const [key, definition] of Object.entries(REPOSITORIES)) {
+    for (const key of EXTERNAL_REPOSITORY_KEYS) {
+      const definition = REPOSITORIES[key];
       const version = matrix[section][key];
       const tag = `v${version}`;
+      const expectedSha = matrix.expectedCommits[section][key];
       const slug = `${owner}/${definition.repository}`;
       const destination = join(workspaceRoot, definition.repository);
       const credentialHelper = [
@@ -135,8 +155,8 @@ export async function checkoutCompatibility(options) {
 
       const head = (await run("git", ["rev-parse", "HEAD"], { cwd: destination })).stdout.trim();
       const tagCommit = (await run("git", ["rev-parse", `refs/tags/${tag}^{commit}`], { cwd: destination })).stdout.trim();
-      if (!/^[a-f0-9]{40}$/.test(head) || head !== tagCommit) {
-        throw new Error(`${slug} ${tag} did not resolve to one exact commit`);
+      if (!/^[a-f0-9]{40}$/.test(head) || head !== tagCommit || head !== expectedSha) {
+        throw new Error(`${slug} ${tag} did not resolve to registered commit ${expectedSha}`);
       }
       const symbolic = await run("git", ["symbolic-ref", "-q", "HEAD"], {
         cwd: destination,
@@ -166,6 +186,7 @@ export async function checkoutCompatibility(options) {
         version,
         tag,
         sha: head,
+        expectedSha,
         remoteUrl,
         path: destination,
         detached: true,
@@ -173,12 +194,82 @@ export async function checkoutCompatibility(options) {
       };
     }
 
+    const opsPath = resolve(opsSourcePath);
+    const opsDefinition = REPOSITORIES.ops;
+    const opsTopLevel = (await run("git", ["rev-parse", "--show-toplevel"], { cwd: opsPath })).stdout.trim();
+    if (resolve(opsTopLevel) !== opsPath) throw new Error("Ops source must be the current repository root");
+    const opsHead = (await run("git", ["rev-parse", "HEAD"], { cwd: opsPath })).stdout.trim();
+    const workflowSha = env.GITHUB_SHA?.trim();
+    if (workflowSha && !/^[a-f0-9]{40}$/.test(workflowSha)) throw new Error("GITHUB_SHA must be a full commit SHA");
+    if (!/^[a-f0-9]{40}$/.test(opsHead) || (workflowSha && opsHead !== workflowSha)) {
+      throw new Error("Ops source HEAD does not match the current workflow checkout SHA");
+    }
+    const opsPackage = JSON.parse(await readFile(join(opsPath, "package.json"), "utf8"));
+    if (opsPackage.name !== opsDefinition.packageName || opsPackage.version !== matrix[section].ops) {
+      throw new Error("Ops current-checkout package identity does not match the compatibility tuple");
+    }
+    const opsTracked = (await run("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: opsPath })).stdout.trim();
+    if (opsTracked) throw new Error("Ops current workflow checkout is not clean");
+    evidence.repositories.ops = {
+      repository: `${owner}/${opsDefinition.repository}`,
+      packageName: opsDefinition.packageName,
+      version: matrix[section].ops,
+      tag: null,
+      sha: opsHead,
+      expectedSha: workflowSha || opsHead,
+      remoteUrl: null,
+      path: opsPath,
+      source: "current-workflow-checkout",
+      detached: null,
+      clean: true,
+    };
+
+    registryNpmrc = join(workspaceRoot, ".npmrc-registry-check");
+    await writeFile(registryNpmrc, [
+      "@zpcoder:registry=https://npm.pkg.github.com",
+      "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}",
+      "always-auth=true",
+      "",
+    ].join("\n"), { mode: 0o600 });
+    evidence.registryPackages = {};
+    for (const key of REGISTRY_PACKAGE_KEYS) {
+      const definition = REPOSITORIES[key];
+      const version = matrix[section][key];
+      const registryEnv = {
+        ...env,
+        NODE_AUTH_TOKEN: token,
+        npm_config_userconfig: registryNpmrc,
+      };
+      const versionResult = await run("npm", [
+        "view", `${definition.packageName}@${version}`, "version", "--json",
+        "--registry=https://npm.pkg.github.com",
+      ], { env: registryEnv });
+      const gitHeadResult = await run("npm", [
+        "view", `${definition.packageName}@${version}`, "gitHead", "--json",
+        "--registry=https://npm.pkg.github.com",
+      ], { env: registryEnv });
+      const publishedVersion = JSON.parse(versionResult.stdout);
+      const publishedGitHead = JSON.parse(gitHeadResult.stdout);
+      if (publishedVersion !== version || publishedGitHead !== matrix.expectedCommits[section][key]) {
+        throw new Error(`${definition.packageName}@${version} is missing or was not published from its registered commit`);
+      }
+      evidence.registryPackages[key] = {
+        packageName: definition.packageName,
+        version: publishedVersion,
+        gitHead: publishedGitHead,
+        registry: "https://npm.pkg.github.com",
+      };
+    }
+    await rm(registryNpmrc, { force: true });
+    registryNpmrc = null;
+
     evidence.status = "passed";
     evidence.finishedAt = new Date().toISOString();
     await writeJsonAtomic(resolve(evidencePath), evidence);
     return evidence;
   } catch (error) {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    if (registryNpmrc) await rm(registryNpmrc, { force: true }).catch(() => {});
+    if (workspaceRoot) await rm(workspaceRoot, { recursive: true, force: true });
     evidence.status = "failed";
     evidence.workspaceRoot = null;
     evidence.finishedAt = new Date().toISOString();
@@ -190,7 +281,7 @@ export async function checkoutCompatibility(options) {
 
 function parseArguments(argv) {
   const [matrixPath, ...rest] = argv;
-  if (!matrixPath) throw new Error("usage: checkout-compatible.mjs <matrix> [--section active|rollback] [--workspace-base path] [--evidence path]");
+  if (!matrixPath) throw new Error("usage: checkout-compatible.mjs <matrix> [--section active|rollback] [--workspace-base path] [--evidence path] [--ops-source path]");
   const options = { matrixPath };
   for (let index = 0; index < rest.length; index += 2) {
     const flag = rest[index];
@@ -199,6 +290,7 @@ function parseArguments(argv) {
     if (flag === "--section") options.section = value;
     else if (flag === "--workspace-base") options.workspaceBase = value;
     else if (flag === "--evidence") options.evidencePath = value;
+    else if (flag === "--ops-source") options.opsSourcePath = value;
     else throw new Error(`unknown argument: ${flag}`);
   }
   return options;

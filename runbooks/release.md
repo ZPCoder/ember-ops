@@ -1,10 +1,11 @@
 # Release and rollback
 
-1. Merge a tested version in each owning repository and create immutable `v<package version>` tags. The first compatibility run is expected only after all seven initial tags exist; the tag push also triggers the workflow.
+1. Merge and publish in dependency order. Protocol, SDK, and config must each have an immutable `v0.1.0` tag and matching GitHub Package (including matching `gitHead`); client, backend-admin, and data need immutable tags. Only after all six tags and all three packages exist should the Ops compatibility workflow be manually dispatched. Ops uses that workflow's current protected SHA and does not self-reference a matrix SHA.
 2. Update `compatibility/versions.json`: `active`/`rollback` contain exact repository package versions, while `contracts` pins the independently versioned wire protocol and config manifest hash. Never deploy a combination absent from this file.
-3. Require both workflow jobs: `automated-compatibility-no-editor` performs authenticated exact-tag checkouts and actual per-repository commands; `creator-editor-required` performs the licensed Cocos Creator 3.8.8 Web build on a configured self-hosted runner. A missing private-repository token, tag, editor runner, or editor path is a release failure.
-4. Run the 250-room/500-client k6 profile from Cloudflare and mainland probes with environment-specific API and credential adapters. Retain its threshold summary with the SHA evidence.
-5. Promote internal slice → dual-client parity → load gate → 4399 sandbox → canary → full traffic.
-6. Roll back by atomically applying the `rollback` tuple. Do not independently downgrade config or protocol.
+3. Set readiness variables only when their resources exist. In particular, `EMBER_PVP_WS_PREPROVISION_V2_ENABLED=true` asserts that the backend has a real WSS Upgrade endpoint and can mint fresh two-seat v2 fixtures; it must remain false today. The GitHub-hosted preflight fails before scheduling any unavailable self-hosted worker.
+4. Require only the final `release-required` check for release promotion (and `ops-unit-required` for pull requests). It requires automated compatibility, the licensed Cocos 3.8.8 build, and complete Cloudflare/container load evidence. Self-hosted editor and load runners must be ephemeral.
+5. Run each 500-VU/250-room target from all three explicit probes. Cloudflare passes only if all its probes pass; otherwise every mainland-container probe must pass. Missing, stale, wrong-SHA, malformed, or threshold-failed evidence blocks release.
+6. Promote internal slice → dual-client parity → load gate → 4399 sandbox → canary → full traffic.
+7. Roll back by atomically applying the `rollback` tuple. Do not independently downgrade config or protocol.
 
 Secrets are referenced by environment-specific secret-manager identifiers. This repository must not contain credentials, 4399 tickets, private keys, or plaintext database passwords.

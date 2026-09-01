@@ -1,35 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "roomCount": 250,
   "logicalClients": 500,
-  "protocolVersion": "1.0.0",
-  "auth": {
-    "header": "Authorization",
-    "value": "Bearer {token}"
-  },
+  "protocolVersion": "1.0",
+  "auth": { "header": "Authorization", "value": "Bearer {token}" },
   "endpoints": {
-    "pairFirst": {
-      "method": "POST",
-      "path": "/v1/pvp/sessions",
-      "acceptedStatuses": [200, 201],
-      "headers": { "Idempotency-Key": "{idempotencyKey}" },
-      "body": {
-        "protocolVersion": "{protocolVersion}",
-        "format": "standard",
-        "deckId": "{deckId}"
-      }
-    },
-    "pairSecond": {
-      "method": "POST",
-      "path": "/v1/pvp/sessions",
-      "acceptedStatuses": [200, 201],
-      "headers": { "Idempotency-Key": "{idempotencyKey}" },
-      "body": {
-        "protocolVersion": "{protocolVersion}",
-        "format": "standard",
-        "deckId": "{deckId}"
-      }
-    },
     "command": {
       "method": "POST",
       "path": "/v1/pvp/commands?matchId={matchId}",
@@ -40,28 +15,21 @@
         "requestId": "{requestId}",
         "idempotencyKey": "{idempotencyKey}",
         "expectedVersion": "{expectedVersion}",
-        "command": { "type": "concede" }
+        "command": { "type": "concede", "player": "{seat}" }
       }
-    },
-    "events": {
-      "method": "GET",
-      "path": "/v1/pvp/events?matchId={matchId}&after={cursor}",
-      "acceptedStatuses": [200]
-    },
-    "reconnect": {
-      "method": "GET",
-      "path": "/v1/pvp/events?matchId={matchId}&after=0",
-      "acceptedStatuses": [200],
-      "headers": { "Connection": "close" }
     }
   },
-  "snapshotPaths": {
-    "matchId": "matchId",
-    "stateVersion": "stateVersion",
-    "cursor": "cursor"
+  "websocket": {
+    "path": "/v1/pvp/ws?matchId={matchId}&after={cursor}",
+    "openTimeoutMs": 5000,
+    "messageTimeoutMs": 5000,
+    "disconnectCommandDelayMs": 250,
+    "reconnectDelayMs": 500
   },
+  "snapshotPaths": { "matchId": "matchId", "stateVersion": "stateVersion", "cursor": "cursor" },
   "stream": {
     "envelopeMode": "object",
+    "matchIdPath": "matchId",
     "eventsPath": "events",
     "cursorPath": "cursor",
     "stateVersionPath": "stateVersion",
@@ -69,12 +37,5 @@
     "correlationPath": "payload.requestId",
     "settlementIdPath": "payload.settlementId"
   },
-  "eventTypes": {
-    "commandAccepted": "command-accepted",
-    "matchEnded": "match-ended"
-  },
-  "polling": {
-    "attempts": 30,
-    "intervalSeconds": 0.1
-  }
+  "eventTypes": { "commandAccepted": "command-accepted", "matchEnded": "match-ended" }
 }

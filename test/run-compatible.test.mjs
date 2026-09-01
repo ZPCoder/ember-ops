@@ -26,13 +26,14 @@ async function createFixture(temporary) {
     const path = join(workspaceRoot, definition.repository);
     await mkdir(path, { recursive: true });
     await writeFile(join(path, "package.json"), JSON.stringify({ name: definition.packageName, version: "0.1.0" }));
-    const sha = createHash("sha1").update(definition.repository).digest("hex");
+    const sha = key === "ops" ? createHash("sha1").update(definition.repository).digest("hex") : matrix.expectedCommits.active[key];
     repositories[key] = {
       repository: `ZPCoder/${definition.repository}`,
       packageName: definition.packageName,
       version: "0.1.0",
       tag: "v0.1.0",
       sha,
+      expectedSha: sha,
       path,
     };
   }
@@ -65,6 +66,8 @@ async function createFixture(temporary) {
     matrixSha256: workspaceMarker.matrixSha256,
     packages: matrix.active,
     contracts: matrix.contracts.active,
+    expectedCommits: matrix.expectedCommits.active,
+    workspaceBase,
     workspaceRoot,
     workspaceMarker,
     repositories,
@@ -74,7 +77,7 @@ async function createFixture(temporary) {
 
 function fakeGateRunner(commands, repositories, failProtocol = false) {
   return async (command, args, options) => {
-    commands.push({ command, args: [...args], cwd: options.cwd });
+    commands.push({ command, args: [...args], cwd: options.cwd, env: options.env });
     const key = Object.entries(repositories).find(([_key, repository]) => repository.path === options.cwd)?.[0];
     let stdout = "";
     let exitCode = 0;
@@ -82,6 +85,15 @@ function fakeGateRunner(commands, repositories, failProtocol = false) {
     if (command === "git" && args[0] === "describe") stdout = "v0.1.0\n";
     if (command === "npm" && key === "sdk" && args.length === 1 && args[0] === "test") stdout = "# tests 239\n# pass 239\n";
     if (command === "node" && key === "sdk") stdout = "# tests 2\n# pass 2\n";
+    if (command === "node" && (key === "client" || key === "backendAdmin")) {
+      stdout = `${JSON.stringify({ status: "passed", stateDigest: "74b42cf24358e6d0" })}\n`;
+    }
+    if (command === "npm" && args[0] === "pack" && new Set(["protocol", "sdk", "config"]).has(key)) {
+      const name = repositories[key].packageName.replace(/^@/, "").replaceAll("/", "-");
+      const destination = args.at(-1);
+      await mkdir(destination, { recursive: true });
+      await writeFile(join(destination, `${name}-0.1.0.tgz`), `fixture-${key}`);
+    }
     if (command === "sqlite3") stdout = "1\n";
     if (failProtocol && command === "npm" && key === "protocol" && args.length === 1 && args[0] === "test") {
       exitCode = 1;
@@ -106,6 +118,7 @@ test("executes real commands for every repository and preserves SHA evidence", a
     matrixPath: fixture.matrixPath,
     checkoutEvidencePath: fixture.checkoutEvidencePath,
     evidencePath,
+    env: { PATH: process.env.PATH, GH_TOKEN: "checkout-only", NODE_AUTH_TOKEN: "registry-only", NPM_TOKEN: "forbidden" },
     commandRunner: fakeGateRunner(commands, fixture.repositories),
   });
 
@@ -117,6 +130,10 @@ test("executes real commands for every repository and preserves SHA evidence", a
   assert.ok(commands.some(({ command, args, cwd }) => command === "npm" && args.join(" ") === "run check:generated" && cwd.endsWith("ember-protocol")));
   assert.ok(commands.some(({ command, args, cwd }) => command === "npm" && args.join(" ") === "run check:compat" && cwd.endsWith("ember-protocol")));
   assert.ok(commands.some(({ command, args, cwd }) => command === "npm" && args.join(" ") === "run typecheck:ci" && cwd.endsWith("ember-client")));
+  assert.ok(commands.some(({ command, args }) => command === "npm" && args.join(" ") === "run test:react-reference"));
+  assert.ok(commands.some(({ command, args }) => command === "npm" && args.join(" ") === "run build:react-reference"));
+  assert.ok(commands.some(({ command, args }) => command === "node" && args.includes("--experimental-strip-types")));
+  assert.ok(commands.every(({ env }) => env.GH_TOKEN === undefined && env.NODE_AUTH_TOKEN === undefined && env.NPM_TOKEN === undefined));
   assert.ok(commands.some(({ command }) => command === "sqlite3"));
   assert.ok(commands.some(({ command, args, cwd }) => command === "npm" && args.join(" ") === "run validate" && cwd.endsWith("ember-data")));
   const persisted = JSON.parse(await readFile(evidencePath, "utf8"));

@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 export function validateMatrix(matrix) {
   const errors = [];
   const semverPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+  const wireVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+  const commitPattern = /^[a-f0-9]{40}$/;
+  const externalRepositories = ["protocol", "sdk", "config", "client", "backendAdmin", "data"];
   if (matrix?.schemaVersion !== 1) errors.push("schemaVersion must be 1");
   for (const section of ["active", "rollback"]) {
     for (const name of ["protocol", "sdk", "config", "client", "backendAdmin", "ops", "data"]) {
@@ -14,9 +17,17 @@ export function validateMatrix(matrix) {
     }
   }
   for (const section of ["active", "rollback"]) {
+    for (const name of externalRepositories) {
+      if (!commitPattern.test(matrix?.expectedCommits?.[section]?.[name] ?? "")) {
+        errors.push(`expectedCommits.${section}.${name} must be an immutable 40-character commit SHA`);
+      }
+    }
+    if (matrix?.expectedCommits?.[section]?.ops !== undefined) {
+      errors.push(`expectedCommits.${section}.ops must be omitted; Ops is the current workflow checkout`);
+    }
     const contract = matrix?.contracts?.[section];
-    if (typeof contract?.protocolVersion !== "string" || !semverPattern.test(contract.protocolVersion)) {
-      errors.push(`contracts.${section}.protocolVersion must be an exact SemVer wire version`);
+    if (typeof contract?.protocolVersion !== "string" || !wireVersionPattern.test(contract.protocolVersion)) {
+      errors.push(`contracts.${section}.protocolVersion must be a canonical major.minor wire version`);
     }
     const manifest = contract?.configManifest;
     if (typeof manifest?.version !== "string" || !semverPattern.test(manifest.version)) {

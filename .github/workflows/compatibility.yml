@@ -9,7 +9,6 @@ on:
         default: active
         type: choice
         options: [active, rollback]
-  pull_request:
   push:
     branches: [main]
     tags: ["v*"]
@@ -23,85 +22,248 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  automated-compatibility-no-editor:
+  release-preflight:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.EMBER_REPOSITORY_READ_TOKEN }}
+      REPOSITORY_TOKEN_CONFIGURED: ${{ secrets.EMBER_REPOSITORY_READ_TOKEN != '' }}
+      COCOS_GATE_ENABLED: ${{ vars.EMBER_COCOS_GATE_ENABLED }}
+      COCOS_RUNNER_READY: ${{ vars.EMBER_COCOS_RUNNER_READY }}
+      COCOS_CREATOR_CLI: ${{ vars.COCOS_CREATOR_CLI }}
+      LOAD_GATE_ENABLED: ${{ vars.EMBER_LOAD_GATE_ENABLED }}
+      LOAD_RUNNERS_READY: ${{ vars.EMBER_LOAD_RUNNERS_READY }}
+      WS_PREPROVISION_V2_ENABLED: ${{ vars.EMBER_PVP_WS_PREPROVISION_V2_ENABLED }}
+      K6_VERSION: ${{ vars.EMBER_K6_VERSION }}
+    steps:
+      - name: Fail fast before scheduling any self-hosted runner
+        run: |
+          test "$REPOSITORY_TOKEN_CONFIGURED" = "true"
+          test "$COCOS_GATE_ENABLED" = "true"
+          test "$COCOS_RUNNER_READY" = "true"
+          test -n "$COCOS_CREATOR_CLI"
+          test "$LOAD_GATE_ENABLED" = "true"
+          test "$LOAD_RUNNERS_READY" = "true"
+          test "$WS_PREPROVISION_V2_ENABLED" = "true"
+          test -n "$K6_VERSION"
+          echo "All required release gates are explicitly configured."
+
+  automated-compatibility-no-editor:
+    needs: release-preflight
+    runs-on: ubuntu-latest
+    env:
       MATRIX_SECTION: ${{ inputs.section || 'active' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - name: Install authenticated checkout and SQLite tooling
+      - name: Install checkout and SQLite tooling
         run: |
           sudo apt-get update
           sudo apt-get install --yes gh sqlite3
-          gh --version
-          git --version
-          sqlite3 --version
-      - name: Require the private-repository token
-        run: test -n "${GH_TOKEN:-}" || { echo "EMBER_REPOSITORY_READ_TOKEN is required" >&2; exit 1; }
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
       - run: npm run check:k6
       - run: npm run check:matrix
-      - name: Checkout exact compatible release tags
+      - name: Checkout immutable releases and verify GitHub Packages
+        env:
+          GH_TOKEN: ${{ secrets.EMBER_REPOSITORY_READ_TOKEN }}
         run: >-
           node scripts/checkout-compatible.mjs compatibility/versions.json
           --section "$MATRIX_SECTION"
           --workspace-base "$RUNNER_TEMP"
+          --ops-source "$GITHUB_WORKSPACE"
           --evidence evidence/checkout.json
-      - name: Execute every automated repository gate
+      - name: Execute automated compatibility gates without credentials
         run: >-
           node scripts/run-compatible.mjs compatibility/versions.json
           --checkout-evidence evidence/checkout.json
           --evidence evidence/gates.json
-      - name: Upload automated compatibility evidence
+      - name: Always remove guarded private checkouts
+        if: always()
+        run: node scripts/cleanup-compatible.mjs "$RUNNER_TEMP"
+      - name: Upload automated evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compatibility-evidence-${{ github.run_id }}-${{ github.job }}
+          name: compatibility-evidence-${{ github.run_id }}
           path: evidence/
           if-no-files-found: error
 
   creator-editor-required:
-    runs-on: [self-hosted, cocos-creator-3.8.8]
+    needs: release-preflight
+    runs-on: [self-hosted, ephemeral, cocos-creator-3.8.8]
     env:
-      GH_TOKEN: ${{ secrets.EMBER_REPOSITORY_READ_TOKEN }}
       MATRIX_SECTION: ${{ inputs.section || 'active' }}
       COCOS_CREATOR_CLI: ${{ vars.COCOS_CREATOR_CLI }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - name: Verify required self-hosted tooling and credentials
-        run: |
-          command -v gh
-          command -v git
-          test -n "${GH_TOKEN:-}" || { echo "EMBER_REPOSITORY_READ_TOKEN is required" >&2; exit 1; }
-          test -n "${COCOS_CREATOR_CLI:-}" || { echo "COCOS_CREATOR_CLI repository variable is required" >&2; exit 1; }
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
-      - run: npm run check:k6
-      - name: Checkout exact compatible release tags for the editor gate
+      - name: Checkout immutable releases for editor gate
+        env:
+          GH_TOKEN: ${{ secrets.EMBER_REPOSITORY_READ_TOKEN }}
         run: >-
           node scripts/checkout-compatible.mjs compatibility/versions.json
           --section "$MATRIX_SECTION"
           --workspace-base "$RUNNER_TEMP"
+          --ops-source "$GITHUB_WORKSPACE"
           --evidence evidence/checkout-editor.json
       - name: Build with licensed Cocos Creator 3.8.8
         run: >-
           node scripts/run-cocos-editor-gate.mjs
           --checkout-evidence evidence/checkout-editor.json
           --evidence evidence/cocos-editor.json
+      - name: Always remove guarded private checkouts
+        if: always()
+        run: node scripts/cleanup-compatible.mjs "$RUNNER_TEMP"
       - name: Upload Cocos editor evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cocos-editor-evidence-${{ github.run_id }}-${{ github.job }}
+          name: cocos-editor-evidence-${{ github.run_id }}
           path: evidence/
+          if-no-files-found: error
+
+  pvp-load-required:
+    needs: release-preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - probe: cloudflare-egress
+            target: cloudflare
+            allowFailure: true
+            environment: load-cloudflare-egress
+            runner: '["self-hosted","ephemeral","ember-k6","cloudflare-egress"]'
+          - probe: cn-mainland-east
+            target: cloudflare
+            allowFailure: true
+            environment: load-cn-mainland-east
+            runner: '["self-hosted","ephemeral","ember-k6","cn-mainland-east"]'
+          - probe: cn-mainland-south
+            target: cloudflare
+            allowFailure: true
+            environment: load-cn-mainland-south
+            runner: '["self-hosted","ephemeral","ember-k6","cn-mainland-south"]'
+          - probe: cloudflare-egress
+            target: mainland-container
+            allowFailure: true
+            environment: load-container-cloudflare-egress
+            runner: '["self-hosted","ephemeral","ember-k6","cloudflare-egress"]'
+          - probe: cn-mainland-east
+            target: mainland-container
+            allowFailure: true
+            environment: load-container-cn-mainland-east
+            runner: '["self-hosted","ephemeral","ember-k6","cn-mainland-east"]'
+          - probe: cn-mainland-south
+            target: mainland-container
+            allowFailure: true
+            environment: load-container-cn-mainland-south
+            runner: '["self-hosted","ephemeral","ember-k6","cn-mainland-south"]'
+    continue-on-error: ${{ matrix.allowFailure }}
+    environment: ${{ matrix.environment }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify ephemeral probe configuration and backend capability
+        env:
+          EXPECTED_K6_VERSION: ${{ vars.EMBER_K6_VERSION }}
+          ROOM_FIXTURE: ${{ vars.EMBER_LOAD_ROOM_FIXTURE }}
+          API_URL: ${{ secrets.EMBER_API_URL }}
+          WS_URL: ${{ secrets.EMBER_WS_URL }}
+        run: |
+          command -v k6
+          k6 version | grep -F "$EXPECTED_K6_VERSION"
+          test -n "$API_URL"
+          test -n "$WS_URL"
+          test -f "$ROOM_FIXTURE"
+          case "$ROOM_FIXTURE" in "$RUNNER_TEMP"/*) ;; *) echo "room fixture must be under RUNNER_TEMP" >&2; exit 1;; esac
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npm run check:k6
+      - name: Run real 500 VU WebSocket load gate
+        env:
+          EMBER_PVP_LOAD_CONTRACT: load/fixtures/pvp-load-contract.json
+          EMBER_LOAD_ROOM_FIXTURE: ${{ vars.EMBER_LOAD_ROOM_FIXTURE }}
+          EMBER_API_URL: ${{ secrets.EMBER_API_URL }}
+          EMBER_WS_URL: ${{ secrets.EMBER_WS_URL }}
+          EMBER_LOAD_TARGET: ${{ matrix.target }}
+          EMBER_LOAD_PROBE_ID: ${{ matrix.probe }}
+          EMBER_LOAD_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}-${{ matrix.probe }}
+          EMBER_SOURCE_SHA: ${{ github.sha }}
+          EMBER_K6_EVIDENCE_PATH: evidence/k6-${{ matrix.target }}-${{ matrix.probe }}.json
+        run: k6 run load/k6-pvp.js
+      - name: Verify complete threshold evidence
+        if: always()
+        run: >-
+          node scripts/verify-k6-summary.mjs evidence/k6-${{ matrix.target }}-${{ matrix.probe }}.json
+          ${{ matrix.target }} ${{ matrix.probe }} ${{ github.sha }}
+      - name: Remove room credentials
+        if: always()
+        env:
+          ROOM_FIXTURE: ${{ vars.EMBER_LOAD_ROOM_FIXTURE }}
+        run: |
+          case "$ROOM_FIXTURE" in "$RUNNER_TEMP"/*) rm -f -- "$ROOM_FIXTURE" ;; *) exit 1;; esac
+      - name: Upload non-secret load evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-evidence-${{ github.run_id }}-${{ matrix.target }}-${{ matrix.probe }}
+          path: evidence/k6-${{ matrix.target }}-${{ matrix.probe }}.json
+          if-no-files-found: error
+
+  release-required:
+    if: always()
+    needs: [release-preflight, automated-compatibility-no-editor, creator-editor-required, pvp-load-required]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every upstream job to succeed
+        env:
+          PREFLIGHT: ${{ needs.release-preflight.result }}
+          AUTOMATED: ${{ needs.automated-compatibility-no-editor.result }}
+          EDITOR: ${{ needs.creator-editor-required.result }}
+          LOAD: ${{ needs.pvp-load-required.result }}
+        run: |
+          test "$PREFLIGHT" = success
+          test "$AUTOMATED" = success
+          test "$EDITOR" = success
+          test "$LOAD" = success
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: compatibility-evidence-${{ github.run_id }}
+          path: release-evidence/automated
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cocos-editor-evidence-${{ github.run_id }}
+          path: release-evidence/editor
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: k6-evidence-${{ github.run_id }}-*
+          path: release-evidence/load
+      - name: Aggregate fail-closed release evidence
+        run: >-
+          node scripts/aggregate-release-evidence.mjs release-evidence
+          ${{ github.sha }} release-required.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-required-${{ github.run_id }}
+          path: release-required.json
           if-no-files-found: error

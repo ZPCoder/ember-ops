@@ -1,0 +1,23 @@
+name: ops-ci-no-secrets
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ops-unit-required:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npm run check:k6
+      - run: npm run check:matrix

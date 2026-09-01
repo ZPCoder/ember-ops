@@ -1,58 +1,73 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import {
-  getPath,
-  normalizeEventEnvelopes,
-  renderTemplate,
-  validateLoadContract,
-} from "../load/pvp-contract.js";
+import { getPath, normalizeEventEnvelopes, renderTemplate, validateLoadContract, validateRoomFixture } from "../load/pvp-contract.js";
 
-test("the environment adapter fixture defines a fail-closed 250-room contract", async () => {
+function roomFixture(now = Date.now()) {
+  return {
+    schemaVersion: 2,
+    protocolVersion: "1.0",
+    targetId: "cloudflare",
+    probeId: "cn-mainland-east",
+    sourceSha: "a".repeat(40),
+    disconnectAt: new Date(now + 10_000).toISOString(),
+    expiresAt: new Date(now + 60_000).toISOString(),
+    rooms: Array.from({ length: 250 }, (_value, roomIndex) => ({
+      roomIndex,
+      matchId: `match-${roomIndex}`,
+      stateVersion: 1,
+      cursor: 2,
+      players: [0, 1].map((seat) => ({ seat, token: `token-${roomIndex}-${seat}-secret` })),
+    })),
+  };
+}
+
+const expected = { protocolVersion: "1.0", targetId: "cloudflare", probeId: "cn-mainland-east", sourceSha: "a".repeat(40) };
+
+test("the contract requires canonical wire commands and true WebSocket reconnect", async () => {
   const contract = JSON.parse(await readFile(new URL("../load/fixtures/pvp-load-contract.json", import.meta.url), "utf8"));
   assert.deepEqual(validateLoadContract(contract), []);
-  assert.equal(contract.roomCount, 250);
-  assert.equal(contract.logicalClients, 500);
+  assert.equal(contract.schemaVersion, 2);
+  assert.equal(contract.protocolVersion, "1.0");
   const rendered = renderTemplate(contract.endpoints.command.body, {
-    protocolVersion: "1.0.0",
-    requestId: "request-1",
-    idempotencyKey: "idempotency-1",
-    expectedVersion: 7,
+    protocolVersion: "1.0", requestId: "r", idempotencyKey: "i", expectedVersion: 7, seat: 1,
   });
-  assert.equal(rendered.expectedVersion, 7);
-  assert.equal(rendered.command.type, "concede");
-  assert.throws(() => renderTemplate("/matches/{missing}", {}), /missing template value/);
+  assert.deepEqual(rendered.command, { type: "concede", player: 1 });
+  const invalid = structuredClone(contract);
+  invalid.protocolVersion = "1.0.0";
+  delete invalid.endpoints.command.body.command.player;
+  assert.deepEqual(validateLoadContract(invalid), [
+    "protocolVersion must be canonical major.minor",
+    "command body must submit concede with command.player={seat}",
+  ]);
 });
 
-test("event normalization requires authoritative cursor and state version", () => {
-  const stream = { envelopeMode: "object", eventsPath: "events", cursorPath: "cursor", stateVersionPath: "stateVersion" };
-  assert.deepEqual(normalizeEventEnvelopes({ events: [{ type: "command-accepted" }], cursor: 3, stateVersion: 4 }, stream), [{
-    envelope: { events: [{ type: "command-accepted" }], cursor: 3, stateVersion: 4 },
-    events: [{ type: "command-accepted" }],
-    cursor: 3,
-    stateVersion: 4,
-  }]);
-  assert.throws(() => normalizeEventEnvelopes({ events: [] }, stream), /missing events, cursor, or stateVersion/);
-  assert.equal(getPath({ payload: { requestId: "request-1" } }, "payload.requestId"), "request-1");
+test("v2 room fixture is exactly 250 rooms and 500 unique seated credentials", () => {
+  const now = Date.now();
+  const fixture = roomFixture(now);
+  assert.deepEqual(validateRoomFixture(fixture, expected, now), []);
+  fixture.rooms[1].players[1].token = fixture.rooms[0].players[0].token;
+  fixture.rooms[2].players[1].seat = 0;
+  assert.deepEqual(validateRoomFixture(fixture, expected, now), [
+    "room 1 has a missing or duplicate player token",
+    "room 2 must contain seats 0 and 1 in order",
+  ]);
 });
 
-test("k6 gate measures accepted-command loss, idempotency, settlement, pairing, and reconnect", async () => {
+test("event normalization requires match, cursor and state version", () => {
+  const stream = { envelopeMode: "object", matchIdPath: "matchId", eventsPath: "events", cursorPath: "cursor", stateVersionPath: "stateVersion" };
+  assert.equal(normalizeEventEnvelopes({ matchId: "m", events: [], cursor: 3, stateVersion: 4 }, stream)[0].matchId, "m");
+  assert.throws(() => normalizeEventEnvelopes({ events: [] }, stream), /missing matchId/);
+  assert.equal(getPath({ payload: { requestId: "r" } }, "payload.requestId"), "r");
+});
+
+test("k6 source configures 500 VUs and two real WebSocket sessions per client", async () => {
   const source = await readFile(new URL("../load/k6-pvp.js", import.meta.url), "utf8");
-  for (const required of [
-    "pvp_lost_accepted_commands",
-    "pvp_duplicate_command_events",
-    "pvp_duplicate_settlement",
-    "pvp_missing_settlement",
-    "pvp_idempotency_violations",
-    "pvp_state_propagation_ms",
-    "pvp_reconnect_ms",
-    "pvp_rooms_paired",
-    "expectedVersion",
-    "idempotencyKey",
-  ]) {
-    assert.match(source, new RegExp(required));
-  }
-  assert.match(source, /EMBER_PVP_LOAD_CONTRACT is required/);
-  assert.match(source, /EMBER_LOAD_CREDENTIALS_FILE is required/);
-  assert.doesNotMatch(source, /duplicateSettlement"\) === true/);
+  assert.match(source, /executor: "per-vu-iterations"/);
+  assert.match(source, /vus: 500/);
+  assert.match(source, /ws\.connect/);
+  assert.match(source, /pvp_ws_sessions/);
+  assert.match(source, /count==1000/);
+  assert.match(source, /validateRoomFixture/);
+  assert.doesNotMatch(source, /shared-iterations|Connection": "close|pairFirst|pairSecond/);
 });

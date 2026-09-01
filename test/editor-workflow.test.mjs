@@ -48,20 +48,26 @@ test("Cocos editor gate fails closed without a configured licensed executable", 
   assert.equal(evidence.workspaceCleaned, true);
 });
 
-test("workflow runs real tag gates on main and separates the self-hosted editor job", async () => {
+test("workflow limits secret gates to protected main and preflights self-hosted jobs", async () => {
   const workflow = await readFile(new URL("../.github/workflows/compatibility.yml", import.meta.url), "utf8");
   assert.match(workflow, /branches: \[main\]/);
-  assert.match(workflow, /tags: \["v\*"\]/);
+  assert.doesNotMatch(workflow, /workflow_dispatch:|tags:/);
   assert.match(workflow, /automated-compatibility-no-editor:/);
   assert.match(workflow, /creator-editor-required:/);
   assert.match(workflow, /runs-on: \[self-hosted, ephemeral, cocos-creator-3\.8\.8\]/);
   assert.match(workflow, /release-preflight:/);
+  assert.match(workflow, /load-environment-preflight:/);
+  assert.match(workflow, /max-parallel: 1/);
   assert.match(workflow, /pvp-load-required:/);
   assert.match(workflow, /release-required:/);
   assert.match(workflow, /persist-credentials: false/);
   assert.doesNotMatch(workflow, /^  pull_request:/m);
   assert.match(workflow, /run-compatible\.mjs/);
   assert.match(workflow, /run-cocos-editor-gate\.mjs/);
+  assert.match(workflow, /preprovision-load-rooms\.mjs/);
+  assert.match(workflow, /github\.run_attempt/);
+  assert.match(workflow, /EMBER_LOAD_PREPROVISION_TOKEN/);
+  assert.doesNotMatch(workflow, /vars\.EMBER_LOAD_ROOM_FIXTURE/);
   const prWorkflow = await readFile(new URL("../.github/workflows/ops-ci.yml", import.meta.url), "utf8");
   assert.match(prWorkflow, /pull_request:/);
   assert.doesNotMatch(prWorkflow, /EMBER_REPOSITORY_READ_TOKEN/);

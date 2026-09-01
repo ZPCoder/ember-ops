@@ -10,6 +10,7 @@ function roomFixture(now = Date.now()) {
     targetId: "cloudflare",
     probeId: "cn-mainland-east",
     sourceSha: "a".repeat(40),
+    runId: "run-1-cloudflare-cn-mainland-east",
     disconnectAt: new Date(now + 10_000).toISOString(),
     expiresAt: new Date(now + 60_000).toISOString(),
     rooms: Array.from({ length: 250 }, (_value, roomIndex) => ({
@@ -22,7 +23,10 @@ function roomFixture(now = Date.now()) {
   };
 }
 
-const expected = { protocolVersion: "1.0", targetId: "cloudflare", probeId: "cn-mainland-east", sourceSha: "a".repeat(40) };
+const expected = {
+  protocolVersion: "1.0", targetId: "cloudflare", probeId: "cn-mainland-east",
+  sourceSha: "a".repeat(40), runId: "run-1-cloudflare-cn-mainland-east",
+};
 
 test("the contract requires canonical wire commands and true WebSocket reconnect", async () => {
   const contract = JSON.parse(await readFile(new URL("../load/fixtures/pvp-load-contract.json", import.meta.url), "utf8"));
@@ -46,6 +50,9 @@ test("v2 room fixture is exactly 250 rooms and 500 unique seated credentials", (
   const now = Date.now();
   const fixture = roomFixture(now);
   assert.deepEqual(validateRoomFixture(fixture, expected, now), []);
+  const stale = structuredClone(fixture);
+  stale.runId = "run-0-cloudflare-cn-mainland-east";
+  assert.deepEqual(validateRoomFixture(stale, expected, now), ["fixture runId does not match the requested load gate"]);
   fixture.rooms[1].players[1].token = fixture.rooms[0].players[0].token;
   fixture.rooms[2].players[1].seat = 0;
   assert.deepEqual(validateRoomFixture(fixture, expected, now), [
@@ -68,6 +75,11 @@ test("k6 source configures 500 VUs and two real WebSocket sessions per client", 
   assert.match(source, /ws\.connect/);
   assert.match(source, /pvp_ws_sessions/);
   assert.match(source, /count==1000/);
+  assert.match(source, /openedAt >= disconnectAt/);
+  assert.match(source, /acceptedCount >= 1 && settlementCount >= 1/);
+  assert.match(source, /duplicateObservationMs/);
+  assert.match(source, /pvp_websocket_open_timeouts/);
+  assert.match(source, /pvp_state_propagation_samples/);
   assert.match(source, /validateRoomFixture/);
   assert.doesNotMatch(source, /shared-iterations|Connection": "close|pairFirst|pairSecond/);
 });

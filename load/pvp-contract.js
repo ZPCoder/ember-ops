@@ -45,13 +45,16 @@ export function validateLoadContract(contract) {
   if (!isObject(websocket) || typeof websocket.path !== "string" || !websocket.path.startsWith("/")) {
     errors.push("websocket.path must be a relative WebSocket path");
   }
-  for (const name of ["openTimeoutMs", "messageTimeoutMs", "disconnectCommandDelayMs", "reconnectDelayMs"]) {
+  for (const name of ["openTimeoutMs", "messageTimeoutMs", "disconnectCommandDelayMs", "reconnectDelayMs", "duplicateObservationMs"]) {
     if (!Number.isInteger(websocket?.[name]) || websocket[name] < 1 || websocket[name] > 30_000) {
       errors.push(`websocket.${name} must be between 1 and 30000 milliseconds`);
     }
   }
   if ((websocket?.reconnectDelayMs ?? 0) <= (websocket?.disconnectCommandDelayMs ?? 0)) {
     errors.push("websocket.reconnectDelayMs must be after the offline command delay");
+  }
+  if ((websocket?.duplicateObservationMs ?? 0) >= (websocket?.messageTimeoutMs ?? 0)) {
+    errors.push("websocket.duplicateObservationMs must be shorter than messageTimeoutMs");
   }
   for (const required of ["matchId", "stateVersion", "cursor"]) {
     if (typeof contract?.snapshotPaths?.[required] !== "string") errors.push(`snapshotPaths.${required} is required`);
@@ -69,7 +72,7 @@ export function validateLoadContract(contract) {
 export function validateRoomFixture(fixture, expected, now = Date.now()) {
   const errors = [];
   if (fixture?.schemaVersion !== 2) errors.push("fixture schemaVersion must be 2");
-  for (const field of ["protocolVersion", "targetId", "probeId", "sourceSha"]) {
+  for (const field of ["protocolVersion", "targetId", "probeId", "sourceSha", "runId"]) {
     if (fixture?.[field] !== expected?.[field]) errors.push(`fixture ${field} does not match the requested load gate`);
   }
   const expiresAt = Date.parse(fixture?.expiresAt ?? "");

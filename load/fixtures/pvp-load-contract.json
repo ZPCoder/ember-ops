@@ -24,7 +24,8 @@
     "openTimeoutMs": 5000,
     "messageTimeoutMs": 5000,
     "disconnectCommandDelayMs": 250,
-    "reconnectDelayMs": 500
+    "reconnectDelayMs": 500,
+    "duplicateObservationMs": 500
   },
   "snapshotPaths": { "matchId": "matchId", "stateVersion": "stateVersion", "cursor": "cursor" },
   "stream": {

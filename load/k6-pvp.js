@@ -24,9 +24,10 @@ if (contractErrors.length > 0) throw new Error(`invalid PVP load contract: ${con
 const roomFixture = JSON.parse(open(__ENV.EMBER_LOAD_ROOM_FIXTURE));
 const fixtureErrors = validateRoomFixture(roomFixture, {
   protocolVersion: contract.protocolVersion,
-  targetId: __ENV.EMBER_LOAD_TARGET,
-  probeId: __ENV.EMBER_LOAD_PROBE_ID,
-  sourceSha: __ENV.EMBER_SOURCE_SHA,
+    targetId: __ENV.EMBER_LOAD_TARGET,
+    probeId: __ENV.EMBER_LOAD_PROBE_ID,
+    sourceSha: __ENV.EMBER_SOURCE_SHA,
+    runId: __ENV.EMBER_LOAD_RUN_ID,
 });
 if (fixtureErrors.length > 0) throw new Error(`invalid pre-provisioned room fixture: ${fixtureErrors.join("; ")}`);
 const clients = new SharedArray("pre-provisioned-pvp-clients-v2", () => roomFixture.rooms.flatMap((room) =>
@@ -52,6 +53,7 @@ const initialAuthoritative = new Counter("pvp_initial_authoritative");
 const initialClosed = new Counter("pvp_initial_ws_closed");
 const reconnectOpened = new Counter("pvp_reconnect_ws_opened");
 const reconnectCaughtUp = new Counter("pvp_reconnect_caught_up");
+const propagationSamples = new Counter("pvp_state_propagation_samples");
 const commandsAccepted = new Counter("pvp_commands_accepted");
 const commandsObserved = new Counter("pvp_commands_observed");
 const settlementsObserved = new Counter("pvp_settlements_observed");
@@ -62,6 +64,8 @@ const missingSettlements = new Counter("pvp_missing_settlement");
 const idempotencyViolations = new Counter("pvp_idempotency_violations");
 const websocketFailures = new Counter("pvp_websocket_failures");
 const earlyInitialCloses = new Counter("pvp_early_initial_closes");
+const lateInitialOpens = new Counter("pvp_late_initial_opens");
+const websocketOpenTimeouts = new Counter("pvp_websocket_open_timeouts");
 
 export const options = {
   scenarios: {
@@ -84,6 +88,7 @@ export const options = {
     pvp_initial_ws_closed: ["count==500"],
     pvp_reconnect_ws_opened: ["count==500"],
     pvp_reconnect_caught_up: ["count==500"],
+    pvp_state_propagation_samples: ["count==500"],
     pvp_commands_accepted: ["count==250"],
     pvp_commands_observed: ["count==500"],
     pvp_settlements_observed: ["count==500"],
@@ -97,6 +102,8 @@ export const options = {
     pvp_idempotency_violations: ["count==0"],
     pvp_websocket_failures: ["count==0"],
     pvp_early_initial_closes: ["count==0"],
+    pvp_late_initial_opens: ["count==0"],
+    pvp_websocket_open_timeouts: ["count==0"],
     checks: ["rate>0.995"],
     http_req_failed: ["rate<0.005"],
   },
@@ -155,11 +162,27 @@ function command(client, requestId, expectedVersion, expectedCursor) {
 
 function connectInitial(client, state) {
   const values = { matchId: client.matchId, cursor: state.cursor };
-  const waitMs = Date.parse(roomFixture.disconnectAt) - Date.now();
+  const connectStarted = Date.now();
+  const disconnectAt = Date.parse(roomFixture.disconnectAt);
+  const waitMs = disconnectAt - connectStarted;
   if (waitMs <= 0) failure("pre-provisioned disconnectAt elapsed before initial WebSocket opened");
   const response = ws.connect(`${wsBaseUrl}${renderTemplate(contract.websocket.path, values)}`, { headers: authHeaders(client) }, (socket) => {
     let authoritative = false;
-    socket.on("open", () => { initialOpened.add(1); wsSessions.add(1); });
+    socket.on("open", () => {
+      const openedAt = Date.now();
+      if (openedAt - connectStarted > contract.websocket.openTimeoutMs) {
+        websocketOpenTimeouts.add(1);
+        socket.close();
+        failure(`initial WebSocket exceeded open timeout for room ${client.roomIndex}`);
+      }
+      if (openedAt >= disconnectAt) {
+        lateInitialOpens.add(1);
+        socket.close();
+        failure(`initial WebSocket opened after the shared disconnect window for room ${client.roomIndex}`);
+      }
+      initialOpened.add(1);
+      wsSessions.add(1);
+    });
     socket.on("message", (message) => {
       let envelopes;
       try { envelopes = validateEnvelope(JSON.parse(message), client, state.cursor, state.stateVersion); }
@@ -174,34 +197,37 @@ function connectInitial(client, state) {
     socket.setTimeout(() => {
       if (!authoritative) websocketFailures.add(1);
       socket.close();
-    }, waitMs);
+    }, Math.max(1, disconnectAt - Date.now()));
   });
   if (response?.status !== 101) failure(`initial WebSocket upgrade failed for room ${client.roomIndex}`);
-  if (Date.now() < Date.parse(roomFixture.disconnectAt)) {
+  if (Date.now() < disconnectAt) {
     earlyInitialCloses.add(1);
     failure(`initial WebSocket closed before the shared disconnect window for room ${client.roomIndex}`);
   }
   initialClosed.add(1);
 }
 
-function connectResume(client, state, requestId, commandStartedAt) {
+function connectResume(client, state, requestId, propagationStartedAt) {
   const reconnectStarted = Date.now();
   const values = { matchId: client.matchId, cursor: state.cursor };
   let caughtUp = false;
   let acceptedCount = 0;
   let settlementCount = 0;
   const response = ws.connect(`${wsBaseUrl}${renderTemplate(contract.websocket.path, values)}`, { headers: authHeaders(client) }, (socket) => {
-    socket.on("open", () => { reconnectOpened.add(1); wsSessions.add(1); });
+    socket.on("open", () => {
+      if (Date.now() - reconnectStarted > contract.websocket.openTimeoutMs) {
+        websocketOpenTimeouts.add(1);
+        socket.close();
+        failure(`reconnect WebSocket exceeded open timeout for room ${client.roomIndex}`);
+      }
+      reconnectOpened.add(1);
+      wsSessions.add(1);
+    });
     socket.on("message", (message) => {
       let envelopes;
       try { envelopes = validateEnvelope(JSON.parse(message), client, state.cursor, state.stateVersion); }
       catch (error) { websocketFailures.add(1); socket.close(); failure(String(error)); }
       for (const envelope of envelopes) {
-        if (envelope.cursor > state.cursor && !caughtUp) {
-          caughtUp = true;
-          reconnect.add(Date.now() - reconnectStarted);
-          reconnectCaughtUp.add(1);
-        }
         state.cursor = Math.max(state.cursor, envelope.cursor);
         state.stateVersion = Math.max(state.stateVersion, envelope.stateVersion);
         for (const event of envelope.events) {
@@ -214,7 +240,14 @@ function connectResume(client, state, requestId, commandStartedAt) {
           }
         }
       }
-      if (acceptedCount >= 1 && settlementCount >= 1) socket.close();
+      if (!caughtUp && acceptedCount >= 1 && settlementCount >= 1) {
+        caughtUp = true;
+        reconnect.add(Date.now() - reconnectStarted);
+        reconnectCaughtUp.add(1);
+        propagation.add(Date.now() - propagationStartedAt);
+        propagationSamples.add(1);
+        socket.setTimeout(() => socket.close(), contract.websocket.duplicateObservationMs);
+      }
     });
     socket.on("error", () => { websocketFailures.add(1); });
     socket.setTimeout(() => socket.close(), contract.websocket.messageTimeoutMs);
@@ -227,7 +260,6 @@ function connectResume(client, state, requestId, commandStartedAt) {
   if (settlementCount > 1) duplicateSettlements.add(settlementCount - 1);
   if (acceptedCount === 1) commandsObserved.add(1);
   if (settlementCount === 1) settlementsObserved.add(1);
-  if (commandStartedAt) propagation.add(Date.now() - commandStartedAt);
   errors.add(false);
 }
 
@@ -243,6 +275,8 @@ export default function () {
     idempotencyViolations.add(0);
     websocketFailures.add(0);
     earlyInitialCloses.add(0);
+    lateInitialOpens.add(0);
+    websocketOpenTimeouts.add(0);
   }
   clientsStarted.add(1);
   if (client.seat === 0) roomsSeen.add(1);
@@ -251,11 +285,11 @@ export default function () {
   const requestId = `concede-${__ENV.EMBER_LOAD_RUN_ID}-${client.roomIndex}`;
   connectInitial(client, state);
   const disconnectAt = Date.parse(roomFixture.disconnectAt);
-  let commandStartedAt = null;
+  let propagationStartedAt = disconnectAt + contract.websocket.disconnectCommandDelayMs;
   if (client.seat === actorSeat) {
     const delay = disconnectAt + contract.websocket.disconnectCommandDelayMs - Date.now();
     if (delay > 0) sleep(delay / 1000);
-    commandStartedAt = Date.now();
+    propagationStartedAt = Date.now();
     const first = command(client, requestId, state.stateVersion, state.cursor);
     commandsAccepted.add(1);
     const replay = command(client, requestId, state.stateVersion, state.cursor);
@@ -263,7 +297,7 @@ export default function () {
   }
   const reconnectDelay = disconnectAt + contract.websocket.reconnectDelayMs - Date.now();
   if (reconnectDelay > 0) sleep(reconnectDelay / 1000);
-  connectResume(client, state, requestId, commandStartedAt);
+  connectResume(client, state, requestId, propagationStartedAt);
 }
 
 export function handleSummary(data) {

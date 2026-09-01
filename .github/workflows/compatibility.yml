@@ -1,24 +1,15 @@
 name: seven-repo-compatibility
 
 on:
-  workflow_dispatch:
-    inputs:
-      section:
-        description: Compatibility tuple to verify
-        required: true
-        default: active
-        type: choice
-        options: [active, rollback]
   push:
     branches: [main]
-    tags: ["v*"]
 
 permissions:
   contents: read
   packages: read
 
 concurrency:
-  group: compatibility-${{ github.ref }}-${{ inputs.section || 'active' }}
+  group: compatibility-${{ github.ref }}-active
   cancel-in-progress: false
 
 jobs:
@@ -50,7 +41,7 @@ jobs:
     needs: release-preflight
     runs-on: ubuntu-latest
     env:
-      MATRIX_SECTION: ${{ inputs.section || 'active' }}
+      MATRIX_SECTION: active
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,15 +79,42 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compatibility-evidence-${{ github.run_id }}
+          name: compatibility-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: evidence/
           if-no-files-found: error
 
-  creator-editor-required:
+  load-environment-preflight:
     needs: release-preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - load-cloudflare-egress
+          - load-cn-mainland-east
+          - load-cn-mainland-south
+          - load-container-cloudflare-egress
+          - load-container-cn-mainland-east
+          - load-container-cn-mainland-south
+    environment: ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate environment-scoped load secrets before self-hosted scheduling
+        env:
+          API_URL: ${{ secrets.EMBER_API_URL }}
+          WS_URL: ${{ secrets.EMBER_WS_URL }}
+          PREPROVISION_URL: ${{ secrets.EMBER_LOAD_PREPROVISION_URL }}
+          PREPROVISION_TOKEN: ${{ secrets.EMBER_LOAD_PREPROVISION_TOKEN }}
+        run: |
+          case "$API_URL" in https://*) ;; *) exit 1;; esac
+          case "$WS_URL" in wss://*) ;; *) exit 1;; esac
+          case "$PREPROVISION_URL" in https://*) ;; *) exit 1;; esac
+          test -n "$PREPROVISION_TOKEN"
+
+  creator-editor-required:
+    needs: [release-preflight, load-environment-preflight]
     runs-on: [self-hosted, ephemeral, cocos-creator-3.8.8]
     env:
-      MATRIX_SECTION: ${{ inputs.section || 'active' }}
+      MATRIX_SECTION: active
       COCOS_CREATOR_CLI: ${{ vars.COCOS_CREATOR_CLI }}
     steps:
       - uses: actions/checkout@v4
@@ -129,14 +147,15 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cocos-editor-evidence-${{ github.run_id }}
+          name: cocos-editor-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: evidence/
           if-no-files-found: error
 
   pvp-load-required:
-    needs: release-preflight
+    needs: [release-preflight, load-environment-preflight]
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - probe: cloudflare-egress
@@ -183,23 +202,35 @@ jobs:
       - name: Verify ephemeral probe configuration and backend capability
         env:
           EXPECTED_K6_VERSION: ${{ vars.EMBER_K6_VERSION }}
-          ROOM_FIXTURE: ${{ vars.EMBER_LOAD_ROOM_FIXTURE }}
           API_URL: ${{ secrets.EMBER_API_URL }}
           WS_URL: ${{ secrets.EMBER_WS_URL }}
+          PREPROVISION_URL: ${{ secrets.EMBER_LOAD_PREPROVISION_URL }}
+          PREPROVISION_TOKEN: ${{ secrets.EMBER_LOAD_PREPROVISION_TOKEN }}
         run: |
           command -v k6
           k6 version | grep -F "$EXPECTED_K6_VERSION"
           test -n "$API_URL"
           test -n "$WS_URL"
-          test -f "$ROOM_FIXTURE"
-          case "$ROOM_FIXTURE" in "$RUNNER_TEMP"/*) ;; *) echo "room fixture must be under RUNNER_TEMP" >&2; exit 1;; esac
+          test -n "$PREPROVISION_URL"
+          test -n "$PREPROVISION_TOKEN"
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
       - run: npm run check:k6
+      - name: Pre-provision exactly 250 fresh two-seat rooms
+        env:
+          EMBER_LOAD_PREPROVISION_URL: ${{ secrets.EMBER_LOAD_PREPROVISION_URL }}
+          EMBER_LOAD_PREPROVISION_TOKEN: ${{ secrets.EMBER_LOAD_PREPROVISION_TOKEN }}
+          EMBER_LOAD_TARGET: ${{ matrix.target }}
+          EMBER_LOAD_PROBE_ID: ${{ matrix.probe }}
+          EMBER_LOAD_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}-${{ matrix.probe }}
+          EMBER_SOURCE_SHA: ${{ github.sha }}
+        run: >-
+          node scripts/preprovision-load-rooms.mjs
+          "$RUNNER_TEMP/ember-pvp-fixture-${{ matrix.target }}-${{ matrix.probe }}.json"
       - name: Run real 500 VU WebSocket load gate
         env:
           EMBER_PVP_LOAD_CONTRACT: load/fixtures/pvp-load-contract.json
-          EMBER_LOAD_ROOM_FIXTURE: ${{ vars.EMBER_LOAD_ROOM_FIXTURE }}
+          EMBER_LOAD_ROOM_FIXTURE: ${{ runner.temp }}/ember-pvp-fixture-${{ matrix.target }}-${{ matrix.probe }}.json
           EMBER_API_URL: ${{ secrets.EMBER_API_URL }}
           EMBER_WS_URL: ${{ secrets.EMBER_WS_URL }}
           EMBER_LOAD_TARGET: ${{ matrix.target }}
@@ -213,33 +244,36 @@ jobs:
         run: >-
           node scripts/verify-k6-summary.mjs evidence/k6-${{ matrix.target }}-${{ matrix.probe }}.json
           ${{ matrix.target }} ${{ matrix.probe }} ${{ github.sha }}
+          ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}-${{ matrix.probe }}
       - name: Remove room credentials
         if: always()
         env:
-          ROOM_FIXTURE: ${{ vars.EMBER_LOAD_ROOM_FIXTURE }}
+          ROOM_FIXTURE: ${{ runner.temp }}/ember-pvp-fixture-${{ matrix.target }}-${{ matrix.probe }}.json
         run: |
           case "$ROOM_FIXTURE" in "$RUNNER_TEMP"/*) rm -f -- "$ROOM_FIXTURE" ;; *) exit 1;; esac
       - name: Upload non-secret load evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: k6-evidence-${{ github.run_id }}-${{ matrix.target }}-${{ matrix.probe }}
+          name: k6-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}-${{ matrix.probe }}
           path: evidence/k6-${{ matrix.target }}-${{ matrix.probe }}.json
           if-no-files-found: error
 
   release-required:
     if: always()
-    needs: [release-preflight, automated-compatibility-no-editor, creator-editor-required, pvp-load-required]
+    needs: [release-preflight, load-environment-preflight, automated-compatibility-no-editor, creator-editor-required, pvp-load-required]
     runs-on: ubuntu-latest
     steps:
       - name: Require every upstream job to succeed
         env:
           PREFLIGHT: ${{ needs.release-preflight.result }}
+          LOAD_ENV_PREFLIGHT: ${{ needs.load-environment-preflight.result }}
           AUTOMATED: ${{ needs.automated-compatibility-no-editor.result }}
           EDITOR: ${{ needs.creator-editor-required.result }}
           LOAD: ${{ needs.pvp-load-required.result }}
         run: |
           test "$PREFLIGHT" = success
+          test "$LOAD_ENV_PREFLIGHT" = success
           test "$AUTOMATED" = success
           test "$EDITOR" = success
           test "$LOAD" = success
@@ -248,22 +282,22 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          pattern: compatibility-evidence-${{ github.run_id }}
+          pattern: compatibility-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-evidence/automated
       - uses: actions/download-artifact@v4
         with:
-          pattern: cocos-editor-evidence-${{ github.run_id }}
+          pattern: cocos-editor-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-evidence/editor
       - uses: actions/download-artifact@v4
         with:
-          pattern: k6-evidence-${{ github.run_id }}-*
+          pattern: k6-evidence-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: release-evidence/load
       - name: Aggregate fail-closed release evidence
         run: >-
           node scripts/aggregate-release-evidence.mjs release-evidence
-          ${{ github.sha }} release-required.json
+          ${{ github.sha }} ${{ github.run_id }}-${{ github.run_attempt }} release-required.json
       - uses: actions/upload-artifact@v4
         with:
-          name: release-required-${{ github.run_id }}
+          name: release-required-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-required.json
           if-no-files-found: error

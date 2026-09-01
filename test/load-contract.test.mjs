@@ -71,6 +71,7 @@ test("event normalization requires match, cursor and state version", () => {
 test("k6 source configures 500 VUs and two real WebSocket sessions per client", async () => {
   const source = await readFile(new URL("../load/k6-pvp.js", import.meta.url), "utf8");
   assert.match(source, /executor: "per-vu-iterations"/);
+  assert.match(source, /summaryTrendStats: \[[^\]]*"count"/);
   assert.match(source, /vus: 500/);
   assert.match(source, /ws\.connect/);
   assert.match(source, /pvp_ws_sessions/);

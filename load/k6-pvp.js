@@ -68,6 +68,7 @@ const lateInitialOpens = new Counter("pvp_late_initial_opens");
 const websocketOpenTimeouts = new Counter("pvp_websocket_open_timeouts");
 
 export const options = {
+  summaryTrendStats: ["avg", "min", "med", "max", "p(90)", "p(95)", "count"],
   scenarios: {
     clients: {
       executor: "per-vu-iterations",

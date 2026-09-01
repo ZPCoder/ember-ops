@@ -48,7 +48,7 @@ test("Cocos editor gate fails closed without a configured licensed executable", 
   assert.equal(evidence.workspaceCleaned, true);
 });
 
-test("workflow limits secret gates to protected main and preflights self-hosted jobs", async () => {
+test("workflow limits secret gates to trusted main and preflights self-hosted jobs", async () => {
   const workflow = await readFile(new URL("../.github/workflows/compatibility.yml", import.meta.url), "utf8");
   assert.match(workflow, /branches: \[main\]/);
   assert.doesNotMatch(workflow, /workflow_dispatch:|tags:/);

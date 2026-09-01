@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { aggregateReleaseEvidence } from "../scripts/aggregate-release-evidence.mjs";
 import { cleanupCompatibleWorkspaces } from "../scripts/cleanup-compatible.mjs";
 import { validateK6Summary } from "../scripts/verify-k6-summary.mjs";
 
@@ -16,11 +17,12 @@ const counts = {
   pvp_early_initial_closes: 0,
 };
 
-function passingSummary() {
+function passingSummary(targetId = "cloudflare", probeId = "cn-mainland-east", sourceSha = "a".repeat(40)) {
   const threshold = { thresholds: { required: { ok: true } } };
   return {
-    schemaVersion: 1, status: "passed", targetId: "cloudflare", probeId: "cn-mainland-east",
-    sourceSha: "a".repeat(40), protocolVersion: "1.0", configuredVus: 500, configuredRooms: 250,
+    schemaVersion: 1, status: "passed", targetId, probeId,
+    sourceSha, protocolVersion: "1.0", configuredVus: 500, configuredRooms: 250,
+    runId: `run-${targetId}-${probeId}`, generatedAt: new Date().toISOString(),
     thresholdFailures: [],
     metrics: {
       ...Object.fromEntries(Object.entries(counts).map(([name, count]) => [name, { values: { count }, ...threshold }])),
@@ -34,12 +36,52 @@ function passingSummary() {
   };
 }
 
+async function writeReleaseEvidence(root, passingTargets, sourceSha = "a".repeat(40)) {
+  await writeFile(join(root, "gates.json"), JSON.stringify({ status: "passed-automated-boundaries" }));
+  await writeFile(join(root, "cocos-editor.json"), JSON.stringify({ status: "passed-editor-boundary" }));
+  const probes = ["cloudflare-egress", "cn-mainland-east", "cn-mainland-south"];
+  for (const targetId of ["cloudflare", "mainland-container"]) {
+    for (const probeId of probes) {
+      const summary = passingSummary(targetId, probeId, sourceSha);
+      if (!passingTargets.includes(targetId)) summary.metrics.pvp_clients_started.values.count = 499;
+      await writeFile(join(root, `k6-${targetId}-${probeId}.json`), JSON.stringify(summary));
+    }
+  }
+}
+
 test("summary verifier rejects a 499-client fake green", () => {
   const summary = passingSummary();
   assert.deepEqual(validateK6Summary(summary, { targetId: "cloudflare", probeId: "cn-mainland-east", sourceSha: "a".repeat(40) }), []);
   summary.metrics.pvp_clients_started.values.count = 499;
   assert.ok(validateK6Summary(summary, { targetId: "cloudflare", probeId: "cn-mainland-east", sourceSha: "a".repeat(40) })
     .includes("pvp_clients_started count must equal 500"));
+});
+
+test("release aggregation prefers Cloudflare only after all three probes pass", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "ember-release-evidence-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeReleaseEvidence(root, ["cloudflare", "mainland-container"]);
+  const evidence = await aggregateReleaseEvidence(root, "a".repeat(40));
+  assert.equal(evidence.selectedHosting, "cloudflare");
+  assert.deepEqual(evidence.targetPasses, { cloudflare: true, "mainland-container": true });
+});
+
+test("release aggregation falls back only when every mainland probe passes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "ember-release-evidence-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeReleaseEvidence(root, ["mainland-container"]);
+  const evidence = await aggregateReleaseEvidence(root, "a".repeat(40));
+  assert.equal(evidence.selectedHosting, "mainland-container");
+  assert.deepEqual(evidence.targetPasses, { cloudflare: false, "mainland-container": true });
+
+  const failedProbe = join(root, "k6-mainland-container-cn-mainland-south.json");
+  const summary = JSON.parse(await readFile(failedProbe, "utf8"));
+  summary.metrics.pvp_clients_started.values.count = 499;
+  await writeFile(failedProbe, JSON.stringify(summary));
+  await assert.rejects(
+    aggregateReleaseEvidence(root, "a".repeat(40)),
+    /neither Cloudflare nor the mainland container passed every required probe/,
+  );
 });
 
 test("cleanup removes only marked compatibility workspaces", async (t) => {
